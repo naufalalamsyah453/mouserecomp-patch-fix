@@ -1,0 +1,174 @@
+From 4990dca6b473a4816b884e87c0cb3dd1f684fe5d Mon Sep 17 00:00:00 2001
+From: naufalalamsyah453 <348628178+naufalalamsyah453@users.noreply.github.com>
+Date: Sat, 31 Oct 2026 17:57:06 +0700
+Subject: [PATCH] Mouse: detect the side buttons (Mouse 4/5) and cut the
+ camera's input lag
+
+Mouse 4 and 5 (SDL_BUTTON_X1/X2, Back/Forward) were dropped whenever the
+cursor was not held in the window (relative mode off): a binding on them
+did nothing until a motion event re-captured the cursor, so the buttons
+looked undetected. Record every SDL button Left..X2 regardless of
+mouse_held, size the table by SDL_BUTTON_X2 (with a static assert tying it
+to BIND_MOUSE) and use an explicit range check instead of the old
+'sizeof' sentinel.
+
+The right-stick fallback the camera uses when the native camera patches
+are not in play also added lag: a fixed 4 ms gate held a stale stick value
+across frames, and a super-linear ramp made a slow mouse move turn slower
+than the hand. Sample once per game frame (framepace_game_frame) so the
+motion is never carried past its frame, and drop the extra ramp, keeping
+only the offset past the game's own dead zone.
+
+tools/test_input_focus.c drives X1/X2 through input_handle_event with the
+cursor free and asserts the bound game buttons appear.
+---
+ runtime/hle/input.c      | 27 ++++++++++++++++++++-------
+ runtime/input_bind.h     |  4 ++--
+ tools/test_input_focus.c | 29 +++++++++++++++++++++++++++++
+ 3 files changed, 51 insertions(+), 9 deletions(-)
+
+diff --git a/runtime/hle/input.c b/runtime/hle/input.c
+index c60d56e..7314d47 100644
+--- a/runtime/hle/input.c
++++ b/runtime/hle/input.c
+@@ -26,13 +26,16 @@ enum {
+ };
+ 
+ _Static_assert(BTN_DOWN == BIND_DOWN && BTN_ZL == BIND_ZL, "bindings follow the button bits");
++_Static_assert(SDL_BUTTON_X2 == BIND_MOUSE_LAST - BIND_MOUSE, "BIND_MOUSE covers every SDL mouse button");
+ 
+ static _Atomic uint64_t key_buttons, pad_buttons;
+ static _Atomic int32_t key_lx, key_ly, key_rx, key_ry, pad_lx, pad_ly, pad_rx, pad_ry;
+ static _Atomic int32_t menu_lx, menu_ly;
+ static _Atomic bool menu_confirm;
+ static uint8_t keys_down[SDL_SCANCODE_COUNT];
+-static uint8_t mouse_down[8];  // SDL_BUTTON_LEFT .. X2 (keyboard bindings BIND_MOUSE + button)
++// SDL_BUTTON_LEFT (1) .. SDL_BUTTON_X2 (5): the side buttons (Back / Forward, "Mouse 4 / 5") included (keyboard
++// bindings BIND_MOUSE + button). Indexed by SDL's button number, so it is one past the highest one.
++static uint8_t mouse_down[SDL_BUTTON_X2 + 1];
+ static SDL_Gamepad *pad;
+ static _Atomic int64_t sampling;
+ static _Atomic bool win_focused = true;  // main thread writes; guest input polls read
+@@ -250,7 +253,7 @@ uint32_t rt_cam_pitch_scale(uint32_t lat, uint32_t lng) {
+ }
+ 
+ static void mouse_stick(int32_t *x, int32_t *y) {
+-    static uint64_t last_ns;
++    static uint64_t last_frame = ~0ull, last_ns;
+     static int32_t hx, hy;
+     *x = *y = 0;
+     if (!(mouse_held || test_mouse) || !g_settings.mouse_camera || cam_reading()) {
+@@ -258,9 +261,15 @@ static void mouse_stick(int32_t *x, int32_t *y) {
+         hx = hy = 0;
+         return;
+     }
++    // One fresh sample per game frame: several polls in a frame read the same stick (the game samples it more than
++    // once), but a fixed time gate used to hold a stale value across frames and added to the camera's lag. The frame
++    // counter advances with the game, so the mouse's motion is never carried past the frame it belongs to.
++    extern uint64_t framepace_game_frame(void);
++    uint64_t frame = framepace_game_frame();
++    if (frame == last_frame) { *x = hx; *y = hy; return; }
+     uint64_t now = plat_now_ns();
+-    if (last_ns && now - last_ns < 4000000) { *x = hx; *y = hy; return; }  // (several polls in one frame: one sample)
+-    double dt = last_ns ? (double)(now - last_ns) / 1e9 : 1 / 60.0;
++    double dt = last_frame && now > last_ns ? (double)(now - last_ns) / 1e9 : 1 / 60.0;
++    last_frame = frame;
+     last_ns = now;
+     if (dt > 0.1) dt = 0.1;
+     static double full = -1, dz = -1;
+@@ -272,8 +281,9 @@ static void mouse_stick(int32_t *x, int32_t *y) {
+     if (g_settings.mouse_invert_y) vy = -vy;
+     double m = sqrt(vx * vx + vy * vy);
+     if (m > 1e-3) {
+-        double out = dz + m * (1 - dz);  // past the dead zone, then linear
+-        if (out > 1) out = 1;
++        // Past the game's own stick dead zone so slow motion still turns the camera; no extra curve on top of it (a
++        // super-linear ramp made a slow mouse move turn slower than the hand and read as lag).
++        double out = (dz + m) < 1 ? (dz + m) : 1;
+         vx *= out / m, vy *= out / m;
+     }
+     hx = *x = (int32_t)lround(vx * 32767);
+@@ -413,7 +423,10 @@ void input_handle_event(const SDL_Event *e) {
+         }
+         break;
+     case SDL_EVENT_MOUSE_BUTTON_DOWN: case SDL_EVENT_MOUSE_BUTTON_UP:
+-        if (e->button.button < sizeof mouse_down && mouse_held) {
++        // Every SDL button (Left .. X2 - the side buttons included) is recorded whether or not the cursor is held in
++        // the window: a binding on Mouse 4 / 5 used to be dropped whenever relative mode was off (the cursor freed, a
++        // menu up, before the game first captured it), so the button looked undetected.
++        if (e->button.button >= SDL_BUTTON_LEFT && e->button.button <= SDL_BUTTON_X2) {
+             if (e->type == SDL_EVENT_MOUSE_BUTTON_DOWN) last_device = DEVICE_KEYBOARD;
+             mouse_down[e->button.button] = e->type == SDL_EVENT_MOUSE_BUTTON_DOWN;
+             recompute_keyboard();
+diff --git a/runtime/input_bind.h b/runtime/input_bind.h
+index b2ddda7..7c1a9b4 100644
+--- a/runtime/input_bind.h
++++ b/runtime/input_bind.h
+@@ -25,8 +25,8 @@ enum {
+     BIND_KEY_COUNT                                       // keyboard: buttons + both sticks + walk + tilt
+ };
+ enum { BIND_DEV_PAD, BIND_DEV_KEY };
+-// A keyboard binding can also be a mouse button: BIND_MOUSE + SDL_BUTTON_LEFT (1) .. SDL_BUTTON_X2 (5), past every
+-// SDL scancode.
++// A keyboard binding can also be a mouse button: BIND_MOUSE + SDL_BUTTON_LEFT (1) .. SDL_BUTTON_X2 (5 - the side
++// buttons, "Mouse 4 / 5"), past every SDL scancode. SDL_BUTTON_X2 is 5; runtime/hle/input.c static-asserts this.
+ #define BIND_MOUSE 0x400
+ #define BIND_MOUSE_LAST (BIND_MOUSE + 5)
+ // What the player uses (runtime/hle/input.c input_last_device)
+diff --git a/tools/test_input_focus.c b/tools/test_input_focus.c
+index 503373c..af0f318 100644
+--- a/tools/test_input_focus.c
++++ b/tools/test_input_focus.c
+@@ -28,6 +28,9 @@ void motion_sensor_event(const SDL_Event *e) { (void)e; sensor_events++; }
+ void vibration_update(SDL_Gamepad *p, bool focused) { (void)p; vibrating = focused; }
+ uint64_t renderer_present_count(void) { return 0; }
+ uint64_t plat_now_ns(void) { return 0; }
++uint64_t framepace_game_frame(void) { return 0; }
++bool framepace_title_ui(void) { return false; }
++bool framepace_menu_ui(void) { return false; }
+ 
+ // PE linkers also keep exported helpers from input.c. These paths are outside this harness.
+ static _Noreturn void unexpected_helper(void) { fputs("unexpected runtime helper\n", stderr); abort(); }
+@@ -47,6 +50,15 @@ static void focus(bool on) {
+     input_handle_event(&e);
+ }
+ 
++// A mouse button, as the window loop delivers it (relative mode off: the side buttons must still register).
++static void mouse_button(int button, bool down) {
++    SDL_Event e = {0};
++    e.type = down ? SDL_EVENT_MOUSE_BUTTON_DOWN : SDL_EVENT_MOUSE_BUTTON_UP;
++    e.button.button = (Uint8)button;
++    assert(!input_user_blocked(&e));
++    input_handle_event(&e);
++}
++
+ static void pump(void) {
+     SDL_UpdateJoysticks();
+     SDL_Event e;
+@@ -114,6 +126,23 @@ int main(void) {
+     controls(joy, true);
+     sample(held, true);
+ 
++    // Mouse buttons beyond Left/Middle/Right (the side buttons, "Mouse 4 / 5") must be detected while the cursor is
++    // free (relative mode off): they used to be dropped whenever mouse_held was false, so a binding on them failed.
++    assert(!mouse_held);
++    g_bind_key[BIND_Y] = BIND_MOUSE + SDL_BUTTON_X1;  // Mouse 4 (Back)
++    g_bind_key[BIND_X] = BIND_MOUSE + SDL_BUTTON_X2;  // Mouse 5 (Forward)
++    recompute_keyboard();
++    mouse_button(SDL_BUTTON_X1, true);
++    assert(input_buttons_now() & (1ull << BTN_Y));
++    mouse_button(SDL_BUTTON_X2, true);
++    assert(input_buttons_now() & (1ull << BTN_X));
++    mouse_button(SDL_BUTTON_X1, false);
++    mouse_button(SDL_BUTTON_X2, false);
++    assert(!(input_buttons_now() & ((1ull << BTN_Y) | (1ull << BTN_X))));
++    g_bind_key[BIND_Y] = 0;
++    g_bind_key[BIND_X] = 0;
++    recompute_keyboard();
++
+     // Losing focus must release cached input even if no further controller event arrives.
+     focus(false);
+     sample(0, false);
+-- 
+2.56.0.windows.4
+
