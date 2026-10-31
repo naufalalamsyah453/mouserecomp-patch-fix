@@ -12,6 +12,23 @@ Fixes (same as [Revivedx/SavageWindRecomp#310](https://github.com/Revivedx/Savag
   fixed 4 ms gate and added a ramp that made a slow mouse move turn slower than the hand. It now samples once per
   game frame and only applies the offset past the game's own dead zone.
 
+## Easy install (Windows) - double-click
+
+1. Download this repo as a ZIP (**Code -> Download ZIP**) and extract it anywhere.
+2. Double-click **`Install Mouse Fix.bat`**.
+3. Pick your folder in the dialog and press OK:
+   - **Game install** (has `savagewind.exe` + `extracted\`, e.g. `C:\Savage Wind`): the fixed build is downloaded
+     from the [release](https://github.com/naufalalamsyah453/SavageWindRecomp-Tbech/releases/tag/v0.3.1-alpha.3-mousefix),
+     changed files are backed up to `backup-sebelum-patch-<date>\`, then installed. `save\`, `cache\`, `extracted\`
+     and `savagewind.ini` are never touched. It offers to clear the AMD driver shader cache (recommended - a stale
+     cache keyed to the old exe can crash the new build; the cache rebuilds itself). On the next start the game code
+     rebuilds from your own dump if the build id differs (one-time wait on the start screen).
+   - **Source checkout** (has `.git\` + `runtime\`): the matching patch is applied; rebuild the runtime afterwards
+     as you normally would (see below).
+
+Same thing from an existing terminal: `powershell -ExecutionPolicy Bypass -File install.ps1 -Folder "C:\Savage Wind"`
+(add `-SkipDriverCache` to leave the driver cache alone; `-Folder` omitted opens the folder dialog).
+
 ## Which patch?
 
 | Your source is ...                                        | Patch                |
@@ -42,7 +59,7 @@ rebuilding for this patch.
 
 ## Binary installs (unpacked a release, no source tree)
 
-A patch needs the source. For an installed release, use the prebuilt fixed build instead:
+A patch needs the source. For an installed release, just use **Easy install** above - or do it manually:
 
 - <https://github.com/naufalalamsyah453/SavageWindRecomp-Tbech/releases/tag/v0.3.1-alpha.3-mousefix>
   (`SavageWind-0.3.1-alpha.3-windows.zip`, built by CI from this same fix on top of `test`) - unpack it over your
