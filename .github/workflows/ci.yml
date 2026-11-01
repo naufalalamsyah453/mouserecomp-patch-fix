@@ -48,7 +48,6 @@ jobs:
       - name: Set up MSYS2 UCRT64 Toolchain
         uses: msys2/setup-msys2@v2
         with:
-          location: 'C:\msys64'
           msystem: UCRT64
           update: true
           install: >-
@@ -65,17 +64,38 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Install SDL3 Mingw Devel
+      - name: Locate MSYS2 UCRT, Install SDL3 & Setup Junction
         shell: pwsh
         run: |
+          # 1. Locate MSYS2 UCRT64
+          $clang = Get-ChildItem "C:\", "D:\" -Filter "clang.exe" -Recurse -ErrorAction SilentlyContinue | Where-Object { $_.FullName -match 'ucrt64' } | Select-Object -First 1
+          if (-not $clang) {
+              Write-Error "Could not find MSYS2 clang.exe"
+              exit 1
+          }
+          $bin = Split-Path -Parent $clang.FullName
+          $ucrt = Split-Path -Parent $bin
+          Write-Host "Located MSYS2 UCRT64 at: $ucrt"
+
+          # Create C:\msys64\ucrt64 junction if not existing
+          if (-not (Test-Path "C:\msys64\ucrt64")) {
+              New-Item -ItemType Directory -Force -Path "C:\msys64" | Out-Null
+              New-Item -ItemType Junction -Path "C:\msys64\ucrt64" -Target $ucrt -Force | Out-Null
+          }
+
+          # 2. Download and install SDL3 mingw into $ucrt
           $sdlVer = "3.4.18"
           $url = "https://github.com/libsdl-org/SDL/releases/download/release-$sdlVer/SDL3-devel-$sdlVer-mingw.tar.gz"
           Invoke-WebRequest -Uri $url -OutFile sdl3.tar.gz
           tar -xzf sdl3.tar.gz
           $sdlDir = "SDL3-$sdlVer\x86_64-w64-mingw32"
-          Copy-Item "$sdlDir\include\SDL3" "C:\msys64\ucrt64\include\SDL3" -Recurse -Force
-          Copy-Item "$sdlDir\lib\libSDL3.dll.a" "C:\msys64\ucrt64\lib\libSDL3.dll.a" -Force
-          Copy-Item "$sdlDir\bin\SDL3.dll" "C:\msys64\ucrt64\bin\SDL3.dll" -Force
+          Copy-Item "$sdlDir\include\SDL3" "$ucrt\include\SDL3" -Recurse -Force
+          Copy-Item "$sdlDir\lib\libSDL3.dll.a" "$ucrt\lib\libSDL3.dll.a" -Force
+          Copy-Item "$sdlDir\bin\SDL3.dll" "$ucrt\bin\SDL3.dll" -Force
+
+          # Export UCRT_DIR and BIN_DIR for next steps
+          echo "UCRT_DIR=$ucrt" >> $env:GITHUB_ENV
+          echo "UCRT_BIN=$bin" >> $env:GITHUB_ENV
 
       - name: Prepare Layout Header
         shell: pwsh
@@ -102,8 +122,8 @@ jobs:
         shell: pwsh
         run: |
           cd totk-src
-          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
-          python tools/build_game.py --make-runtime-lib --version v143 --out build/rtlib
+          $env:PATH = "$env:UCRT_BIN;$env:PATH"
+          python tools/build_game.py --make-runtime-lib --version v143 --out build/rtlib --toolchain "$env:UCRT_DIR" --deps "$env:UCRT_DIR" --ninja (Join-Path "$env:UCRT_BIN" "ninja.exe")
 
       - name: Upload libtotkrt.a Artifact
         uses: actions/upload-artifact@v4
