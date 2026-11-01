@@ -25,8 +25,8 @@ jobs:
 
       - name: Validate Savage Wind Recomp Patch
         run: |
-          echo "Cloning upstream Revivedx/SavageWindRecomp..."
-          git clone --depth 1 https://github.com/Revivedx/SavageWindRecomp.git sw-src
+          echo "Cloning SavageWindRecomp v0.3.1-alpha.3..."
+          git clone --depth 1 --branch v0.3.1-alpha.3 https://github.com/Revivedx/SavageWindRecomp.git sw-src
           echo "Testing mouse-fix.main.patch..."
           git -C sw-src apply --check "$GITHUB_WORKSPACE/mouse-fix.main.patch"
           echo "Savage Wind patch applies cleanly!"
@@ -76,10 +76,32 @@ jobs:
           Copy-Item "$sdlDir\lib\libSDL3.dll.a" "C:\msys64\ucrt64\lib\libSDL3.dll.a" -Force
           Copy-Item "$sdlDir\bin\SDL3.dll" "C:\msys64\ucrt64\bin\SDL3.dll" -Force
 
+      - name: Prepare Layout Header
+        shell: pwsh
+        run: |
+          $genDir = "totk-src/generated/v143"
+          New-Item -ItemType Directory -Force -Path $genDir | Out-Null
+          $layoutContent = @"
+          // Module layout chosen by recomp/layout.py. Generated; do not edit.
+          #pragma once
+
+          #define MOD_MAIN_BASE 0x7000000000ull
+          #define MOD_MAIN_SIZE 0x3adf000ull
+          #define MOD_SUBSDK0_BASE 0x7003c00000ull
+          #define MOD_SUBSDK0_SIZE 0x66c000ull
+          #define MOD_SDK_BASE 0x7004400000ull
+          #define MOD_SDK_SIZE 0xc55000ull
+
+          #define MOD_COUNT 3
+          #define MOD_LIST(X) X(main, MAIN) X(subsdk0, SUBSDK0) X(sdk, SDK)
+          "@
+          Set-Content -Path (Join-Path $genDir "layout.h") -Value $layoutContent -Encoding Ascii
+
       - name: Build Patched libtotkrt.a
-        shell: msys2 {0}
+        shell: pwsh
         run: |
           cd totk-src
+          $env:PATH = "C:\msys64\ucrt64\bin;$env:PATH"
           python tools/build_game.py --make-runtime-lib --version v143 --out build/rtlib
 
       - name: Upload libtotkrt.a Artifact
