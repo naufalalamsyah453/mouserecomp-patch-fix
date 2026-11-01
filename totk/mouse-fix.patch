@@ -33,6 +33,114 @@ index ca7449b..2265d63 100644
      input_mouse_stick(1000, 1000, 1.0 / 60, 1, st);
      CHECK((int64_t)st[0] * st[0] + (int64_t)st[1] * st[1] <= 32768ll * 32768, "mouse: clamped to the unit circle");
      input_mouse_stick(30, 0, 1.0 / 60, 0, st);
+diff --git a/runtime/input.c b/runtime/input.c
+index 8639173..e782abc 100644
+--- a/runtime/input.c
++++ b/runtime/input.c
+@@ -424,6 +424,15 @@ static int pad_physical(uint8_t pd[PAD_COUNT]) {
+ static int pad_read(uint64_t *b, int32_t sl[2], int32_t sr[2]) {
+     uint8_t pd[PAD_COUNT] = {0};
+     if (!pad_physical(pd)) return 0;
++    static uint8_t prev_pd[PAD_COUNT];
++    if ((pd[PAD_START] && !prev_pd[PAD_START]) || (pd[PAD_BACK] && !prev_pd[PAD_BACK])) {
++        g_game_menu = !g_game_menu;
++        ikb_cursor_update();
++    } else if (g_game_menu && ((pd[PAD_SOUTH] && !prev_pd[PAD_SOUTH]) || (pd[PAD_EAST] && !prev_pd[PAD_EAST]))) {
++        g_game_menu = 0;
++        ikb_cursor_update();
++    }
++    memcpy(prev_pd, pd, sizeof prev_pd);
+     *b |= input_map_pad_buttons(pd, pad_layout_get());
+     float dead = stick_dead_get();
+     stick(SDL_GAMEPAD_AXIS_LEFTX, SDL_GAMEPAD_AXIS_LEFTY, dead, sl);
+@@ -441,20 +450,65 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
+         if (state == 1) pad_read(&b, sl, sr);
+         if (ikb_foreground()) {
+             uint8_t down[KEY_COUNT] = {0};
+-            // Mouse buttons count only while the cursor is captured, and a button already held when the capture began
+-            // (the click that refocused the window) is ignored until it is released.
++            static uint8_t prev_down[KEY_COUNT];
++            uint8_t just_pressed[KEY_COUNT] = {0};
++
++            for (int k = 1; k < KEY_COUNT; k++) {
++                down[k] = ikb_down(k);
++                just_pressed[k] = down[k] && !prev_down[k];
++                prev_down[k] = down[k];
++            }
++
++            // Tab (Inventory), M (Map), Alt or Middle-Click toggles cursor mode
++            if (just_pressed[KEY_TAB] || just_pressed[KEY_M] || just_pressed[KEY_LALT] || just_pressed[KEY_MOUSE_M]) {
++                extern volatile int32_t g_game_menu;
++                g_game_menu = !g_game_menu;
++                ikb_cursor_update();
++            } else {
++                extern volatile int32_t g_game_menu;
++                if (g_game_menu && (just_pressed[KEY_LSHIFT] || just_pressed[KEY_MOUSE_R] || ikb_escape())) {
++                    g_game_menu = 0;
++                    ikb_cursor_update();
++                }
++            }
++
++            extern volatile int32_t g_game_menu;
++            int in_menu = g_game_menu != 0;
+             static int was_captured;
+             static uint8_t mouse_ignore[KEY_COUNT];
+             int cap = ikb_captured();
+             for (int k = 1; k < KEY_COUNT; k++) {
+-                down[k] = ikb_down(k);
+                 if (k < KEY_MOUSE_L || k > KEY_MOUSE_X2) continue;
+                 if (cap && !was_captured) mouse_ignore[k] = down[k];
+                 if (!down[k]) mouse_ignore[k] = 0;
+-                if (!cap || mouse_ignore[k]) down[k] = 0;
++                if ((!cap && !in_menu) || mouse_ignore[k]) down[k] = 0;
+             }
+             was_captured = cap;
+-            b |= input_map_buttons(down);
++
++            uint8_t map_down[KEY_COUNT];
++            memcpy(map_down, down, sizeof map_down);
++            if (in_menu) {
++                // In menu mode, suppress mouse attack/shield mapping
++                map_down[KEY_MOUSE_L] = 0;
++                map_down[KEY_MOUSE_R] = 0;
++                map_down[KEY_MOUSE_M] = 0;
++            }
++            b |= input_map_buttons(map_down);
++
++            if (in_menu) {
++                // Direct click interaction:
++                // LMB -> A button (interact / select / inspect item)
++                if (down[KEY_MOUSE_L]) b |= (1ULL << B_A);
++                // RMB -> B button (cancel / back)
++                if (down[KEY_MOUSE_R]) b |= (1ULL << B_B);
++                // Wheel -> L / R (tab navigation)
++                int wheel = ikb_wheel_take();
++                if (wheel > 0) b |= (1ULL << B_L);
++                else if (wheel < 0) b |= (1ULL << B_R);
++            } else {
++                (void)ikb_wheel_take();
++            }
++
+             int32_t k[2];
+             input_map_stick(down, 0, k);
+             pick(&sl[0], &sl[1], k[0], k[1]);
+@@ -486,10 +540,15 @@ static void poll_merged(uint64_t *buttons, int32_t *lx, int32_t *ly, int32_t *rx
+ // g_block: 0 off, 1 text entry open, 2 closed, waiting for the release. The cursor is released while it is open.
+ static volatile int32_t g_block;
+ static volatile int32_t g_menu;   // the in-game menu, the same way (input_menu)
++volatile int32_t g_game_menu;      // in-game menu/inventory/map cursor mode
++
++int input_in_menu(void) {
++    return g_game_menu != 0;
++}
+ 
+ int input_cursor_allowed(void) {
+     const char *in = cfg_get("TOTK_INPUT");
+-    return g_block != 1 && g_menu != 1 && mouse_sens_get() > 0 && !(in && !strcmp(in, "none"));
++    return g_block != 1 && g_menu != 1 && !g_game_menu && mouse_sens_get() > 0 && !(in && !strcmp(in, "none"));
+ }
+ 
+ void input_block(int on) {
 diff --git a/runtime/input_map.c b/runtime/input_map.c
 index 49220ea..73945d6 100644
 --- a/runtime/input_map.c
@@ -70,3 +178,73 @@ index 49220ea..73945d6 100644
  }
  
  void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]) {
+diff --git a/runtime/input_sdl.c b/runtime/input_sdl.c
+index 8ee747a..06f6158 100644
+--- a/runtime/input_sdl.c
++++ b/runtime/input_sdl.c
+@@ -222,3 +222,5 @@ void ikb_mouse_take(int32_t *dx, int32_t *dy) {
+     *dx = plat_xchg32(&mouse_dx, 0);
+     *dy = plat_xchg32(&mouse_dy, 0);
+ }
++
++int ikb_wheel_take(void) { return 0; }
+diff --git a/runtime/input_win.c b/runtime/input_win.c
+index 064f016..44cb411 100644
+--- a/runtime/input_win.c
++++ b/runtime/input_win.c
+@@ -83,6 +83,7 @@ uint32_t input_key_char(int key) {
+ 
+ // ---- mouse camera: raw motion accumulated by the window thread, one stick sample per presented frame
+ static volatile LONG mouse_dx, mouse_dy;   // raw counts since the last frame sample
++static volatile LONG mouse_wheel_steps;    // accumulated wheel notches for menu tab navigation
+ static volatile LONG cur_captured;         // cursor hidden and confined to the client area
+ static volatile LONG cur_active;           // WM_ACTIVATEAPP: the window's application is active
+ // Bits: CUR_REL, Esc or activation by a click on the title bar or border: until a client click; CUR_ESC, set with CUR_REL
+@@ -147,6 +148,14 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
+     case WM_SETCURSOR:
+         if (cur_captured && LOWORD(l) == HTCLIENT) { SetCursor(NULL); *res = TRUE; return 1; }
+         break;
++    case WM_MOUSEWHEEL:
++        if (!menu_is_open()) {
++            short delta = (short)HIWORD(w);
++            InterlockedAdd(&mouse_wheel_steps, delta / WHEEL_DELTA);
++            *res = 0;
++            return 1;
++        }
++        break;
+     case WM_SYSCOMMAND:   // Alt pressed alone would enter the window menu loop, which stalls the game: Alt is a game key
+         if ((w & 0xFFF0) == SC_KEYMENU && l == 0) { *res = 0; return 1; }
+         break;
+@@ -154,7 +163,7 @@ int input_window_msg(HWND h, UINT m, WPARAM w, LPARAM l, LRESULT *res) {
+         if (w == VK_ESCAPE && !(cur_rel & CUR_REL)) { cur_rel_update(rel_esc); cursor_update(h); }
+         break;
+     case WM_LBUTTONDOWN: case WM_RBUTTONDOWN: case WM_MBUTTONDOWN:   // client area only; poll_merged drops the click
+-        if (cur_rel & CUR_REL) { cur_rel_update(rel_clear); cursor_update(h); }
++        if (!input_in_menu() && (cur_rel & CUR_REL)) { cur_rel_update(rel_clear); cursor_update(h); }
+         break;
+     case WM_MOUSEACTIVATE:   // sent before WM_ACTIVATEAPP: a title bar or border click must not capture
+         if (LOWORD(l) != HTCLIENT) cur_rel_update(rel_title);
+@@ -208,6 +217,10 @@ void ikb_mouse_take(int32_t *dx, int32_t *dy) {
+     *dy = InterlockedExchange(&mouse_dy, 0);
+ }
+ 
++int ikb_wheel_take(void) {
++    return (int)InterlockedExchange(&mouse_wheel_steps, 0);
++}
++
+ void ikb_cursor_update(void) { cursor_update(gfx_window_handle()); }
+ 
+ void ikb_menu_closed(void) { cur_rel_update(rel_menu_closed); }
+diff --git a/runtime/input_wsys.h b/runtime/input_wsys.h
+index 4f2fbb9..609f5fa 100644
+--- a/runtime/input_wsys.h
++++ b/runtime/input_wsys.h
+@@ -11,6 +11,8 @@ int ikb_captured(void);                       // the cursor is captured for the
+ void ikb_mouse_take(int32_t *dx, int32_t *dy);   // raw mouse motion since the last call, in counts
+ void ikb_cursor_update(void);                 // what input_cursor_allowed says may have changed
+ void ikb_menu_closed(void);                   // the menu closed: a capture that Esc gave up comes back
++int ikb_wheel_take(void);                     // takes accumulated mouse wheel delta steps since last call
+ 
+ // ---- what input.c provides the back end
+ int input_cursor_allowed(void);               // no text entry or menu open, the mouse camera on, input not disabled
++int input_in_menu(void);                      // 1 while game menu/inventory/map cursor mode is active

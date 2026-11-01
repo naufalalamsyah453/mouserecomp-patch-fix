@@ -15,10 +15,16 @@ Works as a patch you can apply to source checkouts, or via an automated installe
 - **Mouse camera latency**: Deadzone floor model (`MOUSE_TILT_FLOOR 0.40`), sampling once per game frame, removing sluggish ramp curves.
 
 ### 2. Tears of the Kingdom Recomp
-- **Mouse camera responsiveness**: Introduces a 40% tilt floor (`MOUSE_TILT_FLOOR 0.40`, `MOUSE_MIN_TILT 0.02`) in `runtime/input_map.c`.
-- Micro-movements immediately overcome the game's internal stick deadzone without sticky friction.
-- Maintains linear scaling past the floor up to full deflection.
-- Exe redistribution is avoided: built locally using the payload toolchain (`C:\Totk-recomp`).
+- **Mouse camera responsiveness**: Introduces a 40% tilt floor (`MOUSE_TILT_FLOOR 0.40`, `MOUSE_MIN_TILT 0.02`) in `runtime/input_map.c`. Micro-movements immediately overcome the game's internal stick deadzone without sticky friction.
+- **Direct Cursor Interaction in Menus/Inventory/Map**:
+  - When opening Inventory (`Tab`), Map (`M`), or pressing Toggle (`Alt` or Middle Mouse Click):
+    - Cursor is freed and visible across the screen.
+    - Mouse movement does **not** move the analog stick / 3D camera.
+    - **Left Click (LMB)**: Directly selects items / confirms (`A` button).
+    - **Right Click (RMB)**: Cancels / goes back (`B` button).
+    - **Mouse Wheel**: Scrolls between inventory category tabs (`L` / `R`).
+  - Closing menu (`Tab`, `M`, `Shift`/`B`, or `Esc`) immediately locks the cursor back into 3D mouselook.
+- **Automated CI Builds**: All runtime builds and patch verifications run via GitHub Actions CI to avoid local system overhead.
 
 ---
 

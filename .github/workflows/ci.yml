@@ -1,0 +1,98 @@
+name: CI & Patch Verification
+
+on:
+  push:
+    branches: [ main ]
+  pull_request:
+    branches: [ main ]
+  workflow_dispatch:
+
+jobs:
+  validate-patches:
+    name: Validate Patches Against Upstream
+    runs-on: ubuntu-latest
+    steps:
+      - name: Checkout mouserecomp-patch-fix
+        uses: actions/checkout@v4
+
+      - name: Validate TotK Recomp Patch
+        run: |
+          echo "Cloning upstream valentderah/totk-pc-recomp..."
+          git clone --depth 1 https://github.com/valentderah/totk-pc-recomp.git totk-src
+          echo "Testing totk/mouse-fix.patch..."
+          git -C totk-src apply --check "$GITHUB_WORKSPACE/totk/mouse-fix.patch"
+          echo "TotK patch applies cleanly!"
+
+      - name: Validate Savage Wind Recomp Patch
+        run: |
+          echo "Cloning upstream Revivedx/SavageWindRecomp..."
+          git clone --depth 1 https://github.com/Revivedx/SavageWindRecomp.git sw-src
+          echo "Testing mouse-fix.main.patch..."
+          git -C sw-src apply --check "$GITHUB_WORKSPACE/mouse-fix.main.patch"
+          echo "Savage Wind patch applies cleanly!"
+
+  build-totk-runtime:
+    name: Build TotK Runtime Library (Windows)
+    runs-on: windows-latest
+    steps:
+      - name: Checkout mouserecomp-patch-fix
+        uses: actions/checkout@v4
+
+      - name: Checkout totk-pc-recomp (mouse-fix branch)
+        uses: actions/checkout@v4
+        with:
+          repository: naufalalamsyah453/totk-pc-recomp
+          ref: mouse-fix
+          path: totk-src
+
+      - name: Set up MSYS2 UCRT64 Toolchain
+        uses: msys2/setup-msys2@v2
+        with:
+          msystem: UCRT64
+          update: true
+          install: >-
+            mingw-w64-ucrt-x86_64-clang
+            mingw-w64-ucrt-x86_64-lld
+            mingw-w64-ucrt-x86_64-ninja
+            mingw-w64-ucrt-x86_64-vulkan-headers
+            mingw-w64-ucrt-x86_64-opus
+            mingw-w64-ucrt-x86_64-libvpx
+            mingw-w64-ucrt-x86_64-zstd
+
+      - name: Set up Python
+        uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+
+      - name: Install SDL3 Mingw Devel
+        shell: pwsh
+        run: |
+          $sdlVer = "3.4.18"
+          $url = "https://github.com/libsdl-org/SDL/releases/download/release-$sdlVer/SDL3-devel-$sdlVer-mingw.tar.gz"
+          Invoke-WebRequest -Uri $url -OutFile sdl3.tar.gz
+          tar -xzf sdl3.tar.gz
+          $sdlDir = "SDL3-$sdlVer\x86_64-w64-mingw32"
+          Copy-Item "$sdlDir\include\SDL3" "C:\msys64\ucrt64\include\SDL3" -Recurse -Force
+          Copy-Item "$sdlDir\lib\libSDL3.dll.a" "C:\msys64\ucrt64\lib\libSDL3.dll.a" -Force
+          Copy-Item "$sdlDir\bin\SDL3.dll" "C:\msys64\ucrt64\bin\SDL3.dll" -Force
+
+      - name: Build Patched libtotkrt.a
+        shell: msys2 {0}
+        run: |
+          cd totk-src
+          python tools/build_game.py --make-runtime-lib --version v143 --out build/rtlib
+
+      - name: Upload libtotkrt.a Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: libtotkrt-patched
+          path: totk-src/build/rtlib/libtotkrt.a
+
+      - name: Upload Patches Artifact
+        uses: actions/upload-artifact@v4
+        with:
+          name: mouserecomp-patches
+          path: |
+            totk/mouse-fix.patch
+            mouse-fix.main.patch
+            mouse-fix.test.patch
