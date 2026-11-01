@@ -65,26 +65,9 @@ jobs:
         with:
           python-version: "3.12"
 
-      - name: Link MSYS2 Location & Install SDL3
+      - name: Install SDL3 Mingw Devel
         shell: pwsh
         run: |
-          # Ensure C:\msys64\ucrt64 exists
-          $clang = (Get-Command clang.exe -ErrorAction SilentlyContinue)?.Source
-          if (-not $clang) {
-              $found = Get-ChildItem -Path "C:\", "D:\" -Filter "clang.exe" -Recurse -ErrorAction SilentlyContinue | Select-Object -First 1
-              if ($found) { $clang = $found.FullName }
-          }
-          if ($clang) {
-              $bin = Split-Path -Parent $clang
-              $ucrt = Split-Path -Parent $bin
-              Write-Host "Found MSYS2 UCRT at: $ucrt"
-              if (-not (Test-Path "C:\msys64\ucrt64\bin\clang.exe")) {
-                  New-Item -ItemType Directory -Force -Path "C:\msys64" | Out-Null
-                  New-Item -ItemType Junction -Path "C:\msys64\ucrt64" -Target $ucrt -Force | Out-Null
-              }
-          }
-
-          # Install SDL3 mingw development headers and import library
           $sdlVer = "3.4.18"
           $url = "https://github.com/libsdl-org/SDL/releases/download/release-$sdlVer/SDL3-devel-$sdlVer-mingw.tar.gz"
           Invoke-WebRequest -Uri $url -OutFile sdl3.tar.gz
