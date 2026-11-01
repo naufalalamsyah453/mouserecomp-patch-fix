@@ -1,20 +1,57 @@
-# Instal fix mouse untuk Savage Wind Recomp - pilih folder, patch dipasang.
-# Dipanggil dari "Install Mouse Fix.bat" (dobel-klik) atau: powershell -File install.ps1 [-Folder <path>]
-#   Mode source : folder clone Revivedx/SavageWindRecomp (.git + runtime/) -> git apply patch yang cocok.
-#   Mode binary : folder install game (savagewind.exe + extracted/)      -> unduh zip release, timpa file,
-#                 backup dulu; save/, cache/, extracted/ dan savagewind.ini tidak disentuh.
+# Installer Mouse Fix untuk PC Recomp (Savage Wind & Tears of the Kingdom).
+# Dipanggil dari "Install Mouse Fix.bat" (dobel-klik) atau:
+#   powershell -File install.ps1 [-Game <1|2|SavageWind|TotK>] [-Folder <path>]
 param(
-    [string]$Folder,        # tanpa argumen: dialog pilih folder
-    [switch]$NoPrompt,      # non-interaktif: semua pertanyaan dijawab "ya" (untuk otomasi)
-    [switch]$SkipDriverCache, # tidak usah tawarkan/bersihkan cache driver AMD
-    [string]$ZipPath        # pakai zip release lokal (uji), bukan unduhan
+    [string]$Game,            # 1: SavageWind, 2: TotK (tanpa argumen: menu interaktif)
+    [string]$Folder,          # tanpa argumen: dialog pilih folder
+    [switch]$NoPrompt,        # non-interaktif: semua pertanyaan dijawab "ya"
+    [switch]$SkipDriverCache, # lewati pembersihan cache driver AMD
+    [string]$ZipPath          # pakai zip release lokal (uji Savage Wind)
 )
 $ErrorActionPreference = 'Stop'
-$Release = 'https://github.com/naufalalamsyah453/SavageWindRecomp-Tbech/releases/download/v0.3.1-alpha.3-mousefix/SavageWind-0.3.1-alpha.3-windows.zip'
 $here = Split-Path -Parent $MyInvocation.MyCommand.Path
 
 function Say($m) { Write-Host $m }
 function Fail($m) { Write-Host "`nGAGAL: $m" -ForegroundColor Red; exit 1 }
+
+# ---- Menu Pilihan Game ---------------------------------------------------
+if (-not $Game) {
+    Say "=================================================="
+    Say "   PC Recomp Mouse Fix Installer (Multi-Game)    "
+    Say "=================================================="
+    Say "Pilih game yang ingin dipasang patch mouse:"
+    Say "  [1] Savage Wind Recomp (savagewind.exe)"
+    Say "  [2] Tears of the Kingdom Recomp (totk.exe)"
+    Say "  [Q] Keluar"
+    Say ""
+    $choice = Read-Host "Pilihan kamu [1/2/Q]"
+    if ($choice -match '^[qQ]$' -or [string]::IsNullOrWhiteSpace($choice)) {
+        Say "Batal."
+        exit 0
+    }
+    $Game = $choice.Trim()
+}
+
+if ($Game -in @('2', 'totk', 'TotK', 'TOTK')) {
+    # ---- TotK Flow -----------------------------------------------------------
+    $totkScript = Join-Path $here 'totk\build-from-install.ps1'
+    if (-not (Test-Path $totkScript)) { Fail "Script TotK tidak ditemukan: $totkScript" }
+    $params = @{}
+    if ($Folder) { $params['TotkDir'] = $Folder }
+    if ($NoPrompt) { $params['NoPrompt'] = $true }
+    if ($SkipDriverCache) { $params['SkipDriverCache'] = $true }
+    & $totkScript @params
+    exit $LASTEXITCODE
+}
+
+if ($Game -notin @('1', 'savagewind', 'SavageWind', 'sw', 'SW')) {
+    Fail "Pilihan game tidak valid: $Game. Pilih 1 (Savage Wind) atau 2 (TotK)."
+}
+
+# ==========================================================================
+# Savage Wind Flow
+# ==========================================================================
+$Release = 'https://github.com/naufalalamsyah453/SavageWindRecomp-Tbech/releases/download/v0.3.1-alpha.3-mousefix/SavageWind-0.3.1-alpha.3-windows.zip'
 
 # git dengan aman di PowerShell 5.1 (stderr-nya jangan bikin error saat EAP=Stop)
 function Invoke-Git([string]$Repo, [string[]]$GitArgs) {
@@ -93,17 +130,17 @@ $work = Join-Path $stage 'payload'
 Remove-Item $work -Recurse -Force -ErrorAction SilentlyContinue
 Expand-Archive -Path $ZipPath -DestinationPath $work -Force
 $d = Get-ChildItem $work -Directory | Select-Object -First 1
-$payload = if ($d) { $d.FullName } else { $work }   # FullName eksplisit: PS 5.1 ToString() bisa relatif
+$payload = if ($d) { $d.FullName } else { $work }
 if (-not (Test-Path (Join-Path $payload 'savagewind.exe'))) { Fail 'Zip tidak berisi savagewind.exe - zip rusak?' }
 
 $localExe = Join-Path $Folder 'savagewind.exe'
 $same = ((Get-FileHash $localExe -Algorithm SHA256).Hash -eq (Get-FileHash (Join-Path $payload 'savagewind.exe') -Algorithm SHA256).Hash)
 
-# backup file yang akan ditimpa DAN berbeda isinya (bukan save / cache / extracted / settings)
+# backup file yang akan ditimpa DAN berbeda isinya
 $keep = @('extracted', 'save', 'cache', 'savagewind.ini', 'save.lock')
 $backup = $null
 foreach ($item in Get-ChildItem $payload) {
-    if ($keep -contains $item.Name -or $item.PSIsContainer) { continue }   # folder tool (swgen/zig/...) versi lama tidak perlu di-backup
+    if ($keep -contains $item.Name -or $item.PSIsContainer) { continue }
     $dest = Join-Path $Folder $item.Name
     if (-not (Test-Path -LiteralPath $dest)) { continue }
     if ((Get-FileHash -LiteralPath $dest).Hash -eq (Get-FileHash -LiteralPath $item.FullName).Hash) { continue }
@@ -118,7 +155,7 @@ foreach ($item in Get-ChildItem $payload) {
 function Copy-Tree($src, $dst) {
     New-Item -ItemType Directory -Force -Path $dst | Out-Null
     foreach ($f in Get-ChildItem $src -Recurse) {
-        $rel = $f.FullName.Substring($src.Length).TrimStart('\')   # tanpa \ di depan, Join-Path aman
+        $rel = $f.FullName.Substring($src.Length).TrimStart('\')
         $d = Join-Path $dst $rel
         if ($f.PSIsContainer) { New-Item -ItemType Directory -Force -Path $d | Out-Null }
         else {
@@ -135,7 +172,7 @@ foreach ($item in Get-ChildItem $payload) {
     else { Copy-Item $item.FullName (Join-Path $Folder $item.Name) -Force }
 }
 
-# cache driver AMD: blob lama per-path bisa membuat build baru crash (GPU fault) - cache dibangun ulang sendiri
+# cache driver AMD
 $amd = @()
 if (-not $SkipDriverCache) {
     $amd = @('VkCache', 'DxCache', 'DxcCache') | ForEach-Object { Join-Path $env:LOCALAPPDATA "AMD\$_" } | Where-Object { Test-Path $_ }

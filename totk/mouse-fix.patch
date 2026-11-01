@@ -1,0 +1,72 @@
+diff --git a/docs/controls.md b/docs/controls.md
+index 3cd4082..072472d 100644
+--- a/docs/controls.md
++++ b/docs/controls.md
+@@ -78,7 +78,7 @@ bind_Y = pad:north, key:mouse_l
+ 
+ ## Mouse camera
+ 
+-Mouse motion (raw input) becomes right-stick deflection. Each presented frame takes the counts moved since the last frame, divides by the frame time and sets the deflection to `counts per second * TOTK_MOUSE_SENS / 3000` of full, held for that frame, so the turn rate does not depend on the frame rate. This is not mouselook: the game's stick curve and dead zone still apply, so very slow movements do nothing and a fast flick saturates. The mouse deflection competes with the gamepad and arrow keys by the larger-deflection rule.
++Mouse motion (raw input) becomes right-stick deflection. Each presented frame takes the counts moved since the last frame, divides by the frame time and sets the deflection to `counts per second * TOTK_MOUSE_SENS / 3000` of full, with a 40% floor so real movement overcomes the game's stick dead zone at once, held for that frame, so the turn rate does not depend on the frame rate. This is not mouselook: the game's stick curve and dead zone still apply, so very slow movements do nothing and a fast flick saturates. The mouse deflection competes with the gamepad and arrow keys by the larger-deflection rule.
+ 
+ `TOTK_MOUSE_SENS` (0 to 10, default 1; higher turns faster, 0 turns the mouse camera and the cursor capture off). While the window is the foreground window the cursor is hidden and confined to the client area. It is released on focus loss, minimise, while F11 changes the window, during a size or move loop and while a text entry is open. Esc releases it by hand: the cursor shows, the mouse camera and mouse buttons stop, and the window can be moved, minimised or closed. A mouse click inside the client area captures it again; that click does not reach the game. Activating the window by a click on its title bar or border does not capture, so it can be dragged or closed right away; Alt+Tab or a click in the client area captures as before. `TOTK_INPUT=none` disables the capture too.
+ 
+diff --git a/runtime/cfg_probe.c b/runtime/cfg_probe.c
+index ca7449b..2265d63 100644
+--- a/runtime/cfg_probe.c
++++ b/runtime/cfg_probe.c
+@@ -250,13 +250,13 @@ int probe_cfg(void) {
+     input_map_stick(dn, 0, st);
+     CHECK(st[0] == 0 && st[1] == 0, "keys: arrows leave the left stick alone");
+     input_mouse_stick(30, 0, 1.0 / 60, 1, st);
+-    CHECK(st[0] == 32767 * 1800 / 3000 && st[1] == 0, "mouse: 30 counts in 1/60 s is 60% right");
++    CHECK(st[0] == 24903 && st[1] == 0, "mouse: 30 counts in 1/60 s (60% proportional) report 76% with the tilt floor");
+     input_mouse_stick(0, -10, 1.0 / 60, 1, st);
+-    CHECK(st[0] == 0 && st[1] > 0, "mouse: moving up is stick up");
++    CHECK(st[0] == 0 && st[1] == 17039, "mouse: moving up is stick up (52% with the tilt floor)");
+     input_mouse_stick(30, 0, 1.0 / 30, 1, st);
+-    CHECK(st[0] == 32767 * 900 / 3000, "mouse: the same counts over twice the time are half the deflection");
++    CHECK(st[0] == 19005, "mouse: the same counts over twice the time tilt less (58%, the floor holds the low end up)");
+     input_mouse_stick(15, 0, 1.0 / 60, 2, st);
+-    CHECK(st[0] == 32767 * 1800 / 3000, "mouse: doubling sensitivity halves the counts needed (15 counts at 2 = 30 at 1)");
++    CHECK(st[0] == 24903, "mouse: doubling sensitivity halves the counts needed (15 counts at 2 = 30 at 1)");
+     input_mouse_stick(1000, 1000, 1.0 / 60, 1, st);
+     CHECK((int64_t)st[0] * st[0] + (int64_t)st[1] * st[1] <= 32768ll * 32768, "mouse: clamped to the unit circle");
+     input_mouse_stick(30, 0, 1.0 / 60, 0, st);
+diff --git a/runtime/input_map.c b/runtime/input_map.c
+index 49220ea..73945d6 100644
+--- a/runtime/input_map.c
++++ b/runtime/input_map.c
+@@ -12,6 +12,8 @@
+ #define STICK_MAX 32767
+ #define DIAGONAL 23170   // STICK_MAX / sqrt(2)
+ #define MOUSE_FULL_CPS 3000.0
++#define MOUSE_TILT_FLOOR 0.40
++#define MOUSE_MIN_TILT 0.02
+ 
+ #define DEFAULT_KEYS \
+     {KEY_W, B_SL_UP}, {KEY_A, B_SL_LEFT}, {KEY_S, B_SL_DOWN}, {KEY_D, B_SL_RIGHT},                  /* move */ \
+@@ -315,14 +317,20 @@ void input_map_stick(const uint8_t down[KEY_COUNT], int stick, int32_t out[2]) {
+     out[1] = dy * m;
+ }
+ 
++// The mouse camera as a right-stick sample: counts per second times sens of full (MOUSE_FULL_CPS counts a second at
++// sens 1), then the length floored at MOUSE_TILT_FLOOR of full so every real movement turns the camera at once and
++// grows with the speed to full; the direction is the movement's own. Below MOUSE_MIN_TILT nothing reports.
+ void input_mouse_stick(int32_t dx, int32_t dy, double dt_s, float sens, int32_t out[2]) {
+     out[0] = out[1] = 0;
+     if (!(dt_s > 0) || !(sens > 0)) return;
+     double k = STICK_MAX * (double)sens / (MOUSE_FULL_CPS * dt_s);
+     double x = dx * k, y = -dy * k, len = sqrt(x * x + y * y);
+-    if (len > STICK_MAX) { x *= STICK_MAX / len; y *= STICK_MAX / len; }
+-    out[0] = (int32_t)lrint(x);
+-    out[1] = (int32_t)lrint(y);
++    double m = len / STICK_MAX;
++    if (m < MOUSE_MIN_TILT) return;
++    double mag = (MOUSE_TILT_FLOOR + (1.0 - MOUSE_TILT_FLOOR) * (m > 1 ? 1 : m)) * STICK_MAX;
++    double s = mag / len;
++    out[0] = (int32_t)lrint(x * s);
++    out[1] = (int32_t)lrint(y * s);
+ }
+ 
+ void input_pad_stick(int32_t x, int32_t y, float dead, int32_t out[2]) {
